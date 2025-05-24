@@ -100,39 +100,32 @@
               reader.readAsDataURL(audioBlob);
               reader.onloadend = async () => {
                 const base64Audio = reader.result;
-                console.log("Base64 Audio:", base64Audio);
-                try {
-                  const res = await fetch(
-                    "http://127.0.0.1:8000/api/initiate-call",
-                    {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        contactId: contact.id,
-                        audio: base64Audio,
-                      }),
-                    }
-                  );
-                  if (res.ok) {
-                    const data = await res.json();
-                    setResponse(data.response);
-                    const utterance = new SpeechSynthesisUtterance(
-                      data.response
-                    );
-                    utterance.lang = "zh-TW";
-                    window.speechSynthesis.speak(utterance);
-                  } else {
-                    setResponse(`後端錯誤：${res.status} ${res.statusText}`);
+                const res = await fetch(
+                  "http://127.0.0.1:8000/api/initiate-call",
+                  {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      contactId: contact.id,
+                      audio: base64Audio,
+                    }),
                   }
-                } catch (err) {
+                ).catch((err) => {
                   console.error("Fetch error:", err);
-                  setResponse(`無法連接到後端：${err.message}`);
-                }
-                audioChunks = [];
-                stream.getTracks().forEach((track) => track.stop());
+                  setResponse("無法連接到後端，請檢查伺服器");
+                });
+                const data = await res.json();
+                setResponse(data.response);
+                // 播放 AI 回應
+                const utterance = new SpeechSynthesisUtterance(data.response);
+                utterance.lang = "zh-TW";
+                window.speechSynthesis.speak(utterance);
               };
+              audioChunks = [];
+              stream.getTracks().forEach((track) => track.stop());
             };
 
+            // 語音活動檢測
             const checkSilence = () => {
               const buffer = new Float32Array(analyser.fftSize);
               analyser.getFloatTimeDomainData(buffer);
