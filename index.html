@@ -1,0 +1,199 @@
+<script type="text/javascript">
+  var gk_isXlsx = false;
+  var gk_xlsxFileLookup = {};
+  var gk_fileData = {};
+  function filledCell(cell) {
+    return cell !== "" && cell != null;
+  }
+  function loadFileData(filename) {
+    if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+      try {
+        var workbook = XLSX.read(gk_fileData[filename], { type: "base64" });
+        var firstSheetName = workbook.SheetNames[0];
+        var worksheet = workbook.Sheets[firstSheetName];
+
+        // Convert sheet to JSON to filter blank rows
+        var jsonData = XLSX.utils.sheet_to_json(worksheet, {
+          header: 1,
+          blankrows: false,
+          defval: "",
+        });
+        // Filter out blank rows (rows where all cells are empty, null, or undefined)
+        var filteredData = jsonData.filter((row) => row.some(filledCell));
+
+        // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+        var headerRowIndex = filteredData.findIndex(
+          (row, index) =>
+            row.filter(filledCell).length >=
+            filteredData[index + 1]?.filter(filledCell).length
+        );
+        // Fallback
+        if (headerRowIndex === -1 || headerRowIndex > 25) {
+          headerRowIndex = 0;
+        }
+
+        // Convert filtered JSON back to CSV
+        var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+        csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+        return csv;
+      } catch (e) {
+        console.error(e);
+        return "";
+      }
+    }
+    return gk_fileData[filename] || "";
+  }
+</script>
+
+<!DOCTYPE html>
+<html lang="zh-TW">
+  <head>
+    <meta charset="UTF-8" />
+    <title>調查語音代理</title>
+    <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.development.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.development.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.20.15/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="text/babel">
+      const { useState, useEffect } = React;
+
+      function App() {
+        const [contact, setContact] = useState(null);
+        const [response, setResponse] = useState("");
+        const [isRecording, setIsRecording] = useState(false);
+        const [mediaRecorder, setMediaRecorder] = useState(null);
+
+        useEffect(() => {
+          // 設置測試聯繫人
+          setContact({ id: "test-001", phone_number: "0928156792" });
+        }, []);
+
+        const startRecording = async () => {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+              audio: true,
+            });
+            const recorder = new MediaRecorder(stream, {
+              mimeType: "audio/webm",
+            });
+            setMediaRecorder(recorder);
+            setIsRecording(true);
+
+            let audioChunks = [];
+            let silenceStart = null;
+            const audioContext = new AudioContext();
+            const source = audioContext.createMediaStreamSource(stream);
+            const analyser = audioContext.createAnalyser();
+            analyser.fftSize = 2048;
+            source.connect(analyser);
+
+            recorder.ondataavailable = (event) => {
+              audioChunks.push(event.data);
+            };
+
+            recorder.onstop = async () => {
+              const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+              const reader = new FileReader();
+              reader.readAsDataURL(audioBlob);
+              reader.onloadend = async () => {
+                const base64Audio = reader.result;
+                console.log("Base64 Audio:", base64Audio);
+                try {
+                  const res = await fetch(
+                    "http://127.0.0.1:8000/api/initiate-call",
+                    {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        contactId: contact.id,
+                        audio: base64Audio,
+                      }),
+                    }
+                  );
+                  if (res.ok) {
+                    const data = await res.json();
+                    setResponse(data.response);
+                    const utterance = new SpeechSynthesisUtterance(
+                      data.response
+                    );
+                    utterance.lang = "zh-TW";
+                    window.speechSynthesis.speak(utterance);
+                  } else {
+                    setResponse(`後端錯誤：${res.status} ${res.statusText}`);
+                  }
+                } catch (err) {
+                  console.error("Fetch error:", err);
+                  setResponse(`無法連接到後端：${err.message}`);
+                }
+                audioChunks = [];
+                stream.getTracks().forEach((track) => track.stop());
+              };
+            };
+
+            const checkSilence = () => {
+              const buffer = new Float32Array(analyser.fftSize);
+              analyser.getFloatTimeDomainData(buffer);
+              const maxAmplitude = Math.max(...buffer.map(Math.abs));
+              const threshold = 0.01;
+              if (maxAmplitude < threshold) {
+                if (!silenceStart) silenceStart = Date.now();
+                else if (Date.now() - silenceStart > 2000) {
+                  recorder.stop();
+                  setIsRecording(false);
+                  return;
+                }
+              } else {
+                silenceStart = null;
+              }
+              if (recorder.state === "recording") {
+                setTimeout(checkSilence, 100);
+              }
+            };
+
+            recorder.start();
+            checkSilence();
+          } catch (err) {
+            console.error("無法錄音:", err);
+            setResponse("錄音失敗，請檢查麥克風權限");
+          }
+        };
+
+        const stopRecording = () => {
+          if (mediaRecorder && mediaRecorder.state === "recording") {
+            mediaRecorder.stop();
+            setIsRecording(false);
+          }
+        };
+
+        return (
+          <div className="container mx-auto p-4">
+            <h1 className="text-2xl font-bold mb-4">調查語音代理</h1>
+            {contact && (
+              <div className="p-4 border rounded">
+                <p>電話: {contact.phone_number}</p>
+                <button
+                  className={`px-4 py-2 rounded text-white ${
+                    isRecording ? "bg-red-500" : "bg-blue-500"
+                  }`}
+                  onClick={isRecording ? stopRecording : startRecording}
+                >
+                  {isRecording ? "停止錄音" : "開始通話"}
+                </button>
+                {response && (
+                  <div className="mt-2 p-2 border">
+                    <p>AI 回應: {response}</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      ReactDOM.render(<App />, document.getElementById("root"));
+    </script>
+  </body>
+</html>

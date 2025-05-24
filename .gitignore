@@ -1,0 +1,7 @@
+﻿__pycache__/
+.env
+*.db
+*.webm
+*.pdf
+analysis_report.txt
+*.pyc
